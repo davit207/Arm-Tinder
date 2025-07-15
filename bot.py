@@ -1,15 +1,10 @@
-import os
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from db import init_db, add_user, get_user, update_user_field, get_candidates, add_like, check_match, get_likes, get_matches, get_top_users
 from keyboards import main_menu, gender_kb
-from ai_chat import generate_ai_reply
-from dotenv import load_dotenv
 
-load_dotenv()
-API_TOKEN = os.getenv("API_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+API_TOKEN = "8177389098:AAG_fiH7VKVctvTj6XLIUlXT2ZSLUGSwLys"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -120,15 +115,6 @@ async def top_users(message: types.Message):
     for i, t in enumerate(top, start=1):
         text += f"{i}. {t[0]} ({t[1]} լայք)\n"
     await message.answer(text)
-
-@dp.message_handler(commands=['ai'])
-async def ai_chat(message: types.Message):
-    question = message.get_args()
-    if not question:
-        await message.answer("Գրեք հարց:\nՕրինակ: /ai Ինչպե՞ս է եղանակը Երևանում")
-        return
-    answer = await generate_ai_reply(question, OPENAI_KEY)
-    await message.answer(answer)
 
 if __name__ == "__main__":
     init_db()

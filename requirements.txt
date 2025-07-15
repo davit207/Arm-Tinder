@@ -1,1 +1,4 @@
-aiogram==2.25.1\naiohttp\nrequests\npython-dotenv\n
+aiogram==2.25.1
+aiohttp
+requests
+python-dotenv
