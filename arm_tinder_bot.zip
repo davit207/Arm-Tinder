@@ -1,1 +1,319 @@
+# === FILE: bot.py ===
+```python
+import os
+import logging
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils import executor
+from db import init_db, add_user, get_user, update_user_field, get_candidates, add_like, check_match, get_likes, get_matches, get_top_users
+from keyboards import main_menu, gender_kb
+from ai_chat import generate_ai_reply
 
+API_TOKEN = os.getenv("API_TOKEN")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
+
+@dp.message_handler(commands=['start'])
+async def start_cmd(message: types.Message):
+    user_id = message.from_user.id
+    username = message.from_user.username or message.from_user.full_name
+
+    if not get_user(user_id):
+        add_user(user_id, username)
+        await message.answer("Բարի գալուստ Dating Bot 🧡\nԳրեք Ձեր անունը:")
+        await update_user_field(user_id, "step", "name")
+    else:
+        await message.answer("Բարի վերադարձ 🧡", reply_markup=main_menu)
+
+@dp.message_handler()
+async def handle_messages(message: types.Message):
+    user_id = message.from_user.id
+    user = get_user(user_id)
+
+    if not user:
+        await message.answer("Գրեք /start чтобы начать")
+        return
+
+    step = user[8]
+    if step == "name":
+        await update_user_field(user_id, "name", message.text)
+        await update_user_field(user_id, "step", "age")
+        await message.answer("Գրեք Ձեր տարիք:")
+    elif step == "age":
+        if not message.text.isdigit():
+            await message.answer("Տարիքը պետք է լինի թիվ։")
+            return
+        await update_user_field(user_id, "age", int(message.text))
+        await update_user_field(user_id, "step", "gender")
+        await message.answer("Ընտրեք Ձեր սեռը:", reply_markup=gender_kb)
+    elif step == "city":
+        await update_user_field(user_id, "city", message.text)
+        await update_user_field(user_id, "step", "photo")
+        await message.answer("Ուղարկեք Ձեր լուսանկարը:")
+    else:
+        await message.answer("Օգտագործեք մենյու:", reply_markup=main_menu)
+
+@dp.message_handler(content_types=['photo'])
+async def handle_photo(message: types.Message):
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    if user[8] == "photo":
+        photo_id = message.photo[-1].file_id
+        await update_user_field(user_id, "photo_id", photo_id)
+        await update_user_field(user_id, "step", None)
+        await message.answer("Գրանցումն ավարտված է ✅", reply_markup=main_menu)
+
+@dp.callback_query_handler(lambda c: c.data in ["boy", "girl"])
+async def gender_select(call: types.CallbackQuery):
+    gender = "Տղա" if call.data == "boy" else "Աղջիկ"
+    user_id = call.from_user.id
+    await update_user_field(user_id, "gender", gender)
+    await update_user_field(user_id, "step", "city")
+    await call.message.answer("Գրեք Ձեր քաղաքը:")
+    await call.answer()
+
+@dp.message_handler(lambda m: m.text == "Դիտել օգտատերեր")
+async def browse_users(message: types.Message):
+    user_id = message.from_user.id
+    candidates = get_candidates(user_id)
+    if not candidates:
+        await message.answer("Այս պահին չկա համապատասխան օգտատեր։")
+        return
+    for c in candidates:
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("❤️ Լայք", callback_data=f"like_{c[0]}"))
+        caption = f"Անուն: {c[2]}\nՏարիք: {c[3]}\nՔաղաք: {c[5]}"
+        await bot.send_photo(user_id, c[6], caption=caption, reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("like_"))
+async def like_user(call: types.CallbackQuery):
+    to_id = int(call.data.split("_")[1])
+    from_id = call.from_user.id
+    add_like(from_id, to_id)
+    if check_match(from_id, to_id):
+        await bot.send_message(from_id, "Դուք համընկաք ❤️")
+        await bot.send_message(to_id, "Դուք համընկաք ❤️")
+    await call.answer("Լայքը պահպանված է!")
+
+@dp.message_handler(lambda m: m.text == "Իմ լայքերը")
+async def my_likes(message: types.Message):
+    likes = get_likes(message.from_user.id)
+    if not likes:
+        await message.answer("Ձեզ դեռ չեն լայքել 😔")
+    else:
+        await message.answer("Ձեզ լայքել են:\n" + "\n".join(likes))
+
+@dp.message_handler(lambda m: m.text == "Իմ ՄԱՉ-երը")
+async def my_matches(message: types.Message):
+    matches = get_matches(message.from_user.id)
+    if not matches:
+        await message.answer("Դեռ համընկումներ չկան։")
+    else:
+        await message.answer("Ձեր համընկումները:\n" + "\n".join(matches))
+
+@dp.message_handler(lambda m: m.text == "TOP 10")
+async def top_users(message: types.Message):
+    top = get_top_users()
+    text = "TOP 10 ամենահայտնի օգտատերերը:\n"
+    for i, t in enumerate(top, start=1):
+        text += f"{i}. {t[0]} ({t[1]} լայք)\n"
+    await message.answer(text)
+
+@dp.message_handler(commands=['ai'])
+async def ai_chat(message: types.Message):
+    question = message.get_args()
+    if not question:
+        await message.answer("Գրեք հարց:\nՕրինակ: /ai Ինչպե՞ս է եղանակը Երևանում")
+        return
+    answer = await generate_ai_reply(question, OPENAI_KEY)
+    await message.answer(answer)
+
+if __name__ == "__main__":
+    init_db()
+    executor.start_polling(dp, skip_updates=True)
+```
+
+# === FILE: db.py ===
+```python
+import sqlite3
+
+def init_db():
+    conn = sqlite3.connect("bot.db")
+    cursor = conn.cursor()
+    cursor.execute("""CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        name TEXT,
+        age INTEGER,
+        gender TEXT,
+        city TEXT,
+        photo_id TEXT,
+        likes INTEGER DEFAULT 0,
+        step TEXT
+    )""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS likes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_id INTEGER,
+        to_id INTEGER
+    )""")
+    conn.commit()
+    conn.close()
+
+def get_user(user_id):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    user = cur.fetchone()
+    conn.close()
+    return user
+
+def add_user(user_id, username):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+    conn.commit()
+    conn.close()
+
+def update_user_field(user_id, field, value):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+    cur.execute(f"UPDATE users SET {field}=? WHERE user_id=?", (value, user_id))
+    conn.commit()
+    conn.close()
+
+def get_candidates(user_id):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE user_id!=? AND photo_id IS NOT NULL", (user_id,))
+    candidates = cur.fetchall()
+    conn.close()
+    return candidates
+
+def add_like(from_id, to_id):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+    cur.execute("INSERT INTO likes (from_id, to_id) VALUES (?, ?)", (from_id, to_id))
+    cur.execute("UPDATE users SET likes = likes + 1 WHERE user_id=?", (to_id,))
+    conn.commit()
+    conn.close()
+
+def check_match(user1, user2):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM likes WHERE from_id=? AND to_id=?", (user2, user1))
+    match = cur.fetchone()
+    conn.close()
+    return bool(match)
+
+def get_likes(user_id):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+    cur.execute("SELECT from_id FROM likes WHERE to_id=?", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return [str(r[0]) for r in rows]
+
+def get_matches(user_id):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT u.username FROM likes l
+        JOIN users u ON l.from_id=u.user_id
+        WHERE l.to_id=? AND EXISTS (
+            SELECT 1 FROM likes WHERE from_id=? AND to_id=l.from_id
+        )
+    """, (user_id, user_id))
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+def get_top_users():
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+    cur.execute("SELECT username, likes FROM users ORDER BY likes DESC LIMIT 10")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+```
+
+# === FILE: keyboards.py ===
+```python
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+
+main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+main_menu.add(KeyboardButton("Դիտել օգտատերեր"))
+main_menu.add(KeyboardButton("Իմ լայքերը"), KeyboardButton("Իմ ՄԱՉ-երը"))
+main_menu.add(KeyboardButton("TOP 10"))
+
+gender_kb = InlineKeyboardMarkup()
+gender_kb.add(InlineKeyboardButton("Տղա", callback_data="boy"))
+gender_kb.add(InlineKeyboardButton("Աղջիկ", callback_data="girl"))
+```
+
+# === FILE: ai_chat.py ===
+```python
+import aiohttp
+
+async def generate_ai_reply(prompt, api_key):
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    data = {
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 200
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=data) as resp:
+            result = await resp.json()
+            return result['choices'][0]['message']['content']
+```
+
+# === FILE: requirements.txt ===
+```
+aiogram==2.25.1
+aiohttp
+requests
+```
+
+# === FILE: Procfile ===
+```
+worker: python bot.py
+```
+
+# === FILE: .env.example ===
+```
+API_TOKEN=your_telegram_token
+OPENAI_API_KEY=your_openai_key
+```
+
+# === FILE: README.md ===
+```
+# ARM Tinder Bot PRO Pack
+
+## 🚀 Установка и запуск на Render
+1. Склонируй репозиторий или загрузи ZIP.
+2. Создай сервис на Render:
+   - Тип: **Worker**
+   - Build Command:
+     ```
+     pip install -r requirements.txt
+     ```
+   - Start Command:
+     ```
+     python bot.py
+     ```
+3. Добавь **Environment Variables**:
+   ```
+   API_TOKEN=твой_токен
+   OPENAI_API_KEY=твой_ключ
+   ```
+4. Deploy и бот будет работать 24/7.
+
+## ✅ Функции:
+- Регистрация с анкетой (Имя, Возраст, Пол, Город, Фото)
+- Лайки + Матчи
+- TOP 10 пользователей
+- AI-чат через /ai команда
+```
